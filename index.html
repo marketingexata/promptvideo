@@ -768,6 +768,72 @@ textarea:focus-visible {
    RESPONSIF LAYAR HP KECIL
    ============================================================ */
 
+/* ============================================================
+   POPUP PILIHAN MODE NASKAH dan KETERANGAN DURASI
+   ============================================================ */
+
+#modal:empty {
+  display: none;
+}
+.mb {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(7, 19, 29, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.md {
+  background: var(--card);
+  color: var(--tx);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 92vh;
+  overflow: auto;
+  padding: 20px;
+}
+.md h3 {
+  font: 500 22px var(--ser);
+  margin: 0 0 6px;
+}
+.md > p {
+  color: var(--mut);
+  font-size: 14.5px;
+  margin: 0 0 14px;
+}
+.md .opts {
+  grid-template-columns: 1fr;
+}
+.md .opt small {
+  display: block;
+  margin-top: 4px;
+}
+.md .cx {
+  margin-top: 10px;
+  width: 100%;
+}
+.est {
+  display: block;
+  margin: 6px 0 2px;
+  color: var(--mut);
+  font-size: 13.5px;
+}
+.mode-tag {
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--ac2);
+  color: var(--tx);
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  padding: 3px 10px;
+  margin-bottom: 10px;
+}
+
 @media (max-width: 480px) {
   .btn {
     padding: 13px 16px;
@@ -818,6 +884,8 @@ textarea:focus-visible {
 <div class="bar" id="nav"></div>
 
 <!-- NOTIFIKASI KECIL -->
+<!-- POPUP PILIHAN MODE NASKAH (diisi oleh JavaScript) -->
+<div id="modal"></div>
 <div id="toast"></div>
 
 <!-- ============================ JAVASCRIPT ============================ -->
@@ -835,6 +903,12 @@ textarea:focus-visible {
 //   BAGIAN 7  PEMBUAT PROMPT       -> build(): mengisi template dengan pilihan pengguna
 //   BAGIAN 8  EVENT                -> klik, ketik, pilih dropdown
 //   BAGIAN 9  INISIALISASI         -> dijalankan saat halaman dibuka
+//
+// FITUR BARU
+//   - MODE NASKAH   : popup saat klik Lanjut di langkah 5. S.mode = 'join' (menyambung) atau 'split'
+//                     (terpisah). Pemisah naskah: partSplit(). Popup: modalHtml(), pickMode().
+//   - LATAR PER SCENE: hanya mode 'split'. Disimpan di S.scenes[i].env / envCustom, dipakai build().
+//   - ESTIMASI DURASI: RATE (kata per detik), estSec(), estTxt(). Durasi otomatis = S.scenes[i].durAuto.
 //
 // CARA CEPAT MENGEDIT
 //   - Ganti kalimat naskah       : BAGIAN 1, cari judulnya lalu edit baris-barisnya (akhiri kalimat dengan . ? !).
@@ -5187,6 +5261,17 @@ const VON = `# IMPORTANT OVERRIDE - VOICE-OVER VIDEO (NO ON-SCREEN CHARACTER)
 This scene is a voice-over video. Show ONLY photorealistic, cinematic AI-generated footage (b-roll) that illustrates the narration. NO talking head. NO on-screen person speaking or lip-syncing; if a person appears, show only hands, silhouettes, or people from behind, never speaking. The exact dialogue is spoken ONLY as an off-screen narrator voice-over; the rule against voice-over below is overridden and voice-over narration is REQUIRED. Audio = clean voice-over only: NO background music, NO sound effects, NO ambient noise. Wherever this prompt mentions the character, face, lips, mouth, or lip synchronization, ignore it and apply the continuity rules (camera, location, lighting, visual style, narrator voice identity) to the footage instead. Keep the same narrator voice in every scene.`;
 
 // Gabungan data untuk dipakai oleh kode di bawah.
+// ATURAN TAMBAHAN UNTUK MODE NASKAH TERPISAH (dipasang di depan prompt tiap scene oleh build()).
+const SPLIT_BASE = `# IMPORTANT OVERRIDE - SEPARATE-SCENE MODE (EACH SCENE HAS ITS OWN COMPLETE DIALOGUE)
+Each scene in this project carries its own complete, self-contained dialogue. The text in SCENE_n_EXACT_DIALOGUE is a finished thought: speak it in full from its first word to its last word, never cut it off mid-sentence, and never expect its words to continue in the next scene. Ignore any earlier instruction that says a sentence may continue into the next scene.
+The scenes still belong to the same story, so keep the same character identity (face, hairstyle, outfit, body proportions), the same voice and the same visual style across all scenes. If this scene stays in the same location as the previous scene, continuing from the previous scene's last frame is still allowed.`;
+const LOC_CHANGE = `# LOCATION CHANGE FOR THIS SCENE
+This scene takes place in a DIFFERENT location from the previous scene (previous location: {OLD}).
+NEW LOCATION FOR THIS SCENE: {NEW}.
+Open directly in the new location with a clean cut. Do NOT continue the previous environment and do NOT try to match the previous scene's last frame as a place. Use the previous scene video and its last frame (attached in Google Flow) ONLY as a reference for the character's identity, outfit and voice.`;
+const CLEAN_END = `# CLEAN ENDING FOR THIS SCENE
+The next scene happens in a different location ({NEXT}). Do not prepare a continuation frame for it. End this scene on a stable, natural closing frame right after the dialogue is finished.`;
+
 const D = { scripts: SCRIPTS, tpl: TEMPLATES };
 
 // ==============================================================================
@@ -5649,6 +5734,8 @@ const blank = () => ({
   envCustom: '',
   master: '',
   customScript: '',
+  mode: '',
+  modeKey: '',
   v: 4,
   step: 1,
   open: {},
@@ -5666,6 +5753,9 @@ const blank = () => ({
     text: '',
     dur: 8,
     dirty: false,
+    durAuto: true,
+    env: '',
+    envCustom: '',
   })),
   out: null,
 });
@@ -5801,6 +5891,20 @@ const sc = () => D.scripts[S.div]?.[S.cat] || [],
 const words = (t) => (t.trim().match(/\S+/g) || []).length,
   sug = (w) => [4, 6, 8, 10].find((d) => cap[d] >= w) || 10;
 
+// ESTIMASI DURASI: kecepatan bicara sekitar 2,2 kata per detik (sama dengan batas kata di tabel cap).
+// Ubah RATE kalau suara terasa lebih cepat atau lebih lambat.
+const RATE = 2.2,
+  estSec = (t) => Math.round((words(t) / RATE) * 10) / 10;
+
+// MODE NASKAH: 'join' = menyambung (bawaan lama), 'split' = terpisah (kalimat utuh per scene).
+const MODE = () => (S.mode === 'split' ? 'split' : 'join'),
+  MODE_LABEL = {
+    join: 'Menyambung (scene 1 sampai 3 satu alur)',
+    split: 'Terpisah (kalimat utuh per scene)',
+  },
+  modeKey = () => [S.div, S.cat, S.master].join('|'),
+  needAsk = () => S.mode === '' || S.modeKey !== modeKey();
+
 // Helper: daftar 15 lokasi untuk pilihan saat ini (brand + jenis video).
 const envs = () =>
   (ENVB[S.div] || ENVB.umum).concat(ENVC[S.cat] || ENVC.INFORMASI).map((x) => x.split('|'));
@@ -5834,6 +5938,69 @@ function part(sent, n, ends) {
   return c.slice(1).map((e, k) => sent.slice(c[k], e).join(' '));
 }
 
+// Menyusun kalimat utuh dari potongan: potongan digabung sampai bertemu tanda akhir kalimat.
+function wholeSentences(sent, ends) {
+  const out = [];
+  let cur = [];
+  sent.forEach((u, i) => {
+    cur.push(u);
+    if (ends[i]) {
+      out.push(cur.join(' '));
+      cur = [];
+    }
+  });
+  if (cur.length) out.push(cur.join(' '));
+  return out;
+}
+
+// Nama atau singkatan yang huruf depannya tidak boleh dikecilkan saat dua kalimat digabung.
+const PROPER = ['Nenkin', 'Gensen', 'Jepang', 'Indonesia', 'Japan', 'Cultural', 'Kaigo', 'Google', 'Flow'];
+
+// Menggabung dua kalimat jadi satu: kalimat pertama kehilangan tanda akhirnya, kalimat kedua
+// dikecilkan huruf depannya. Contoh: "Mau cek? Tanya tim EXATA." -> "Mau cek, tanya tim EXATA."
+function joinOne(a, b) {
+  const w = b.split(' ')[0],
+    keep = /[A-Z].*[A-Z]/.test(w) || PROPER.includes(w.replace(/[,.:;]$/, ''));
+  return a.replace(/[.?!]+$/, '') + ', ' + (keep ? b : b.charAt(0).toLowerCase() + b.slice(1));
+}
+
+// Mengambil SATU kalimat utuh untuk tiap scene: scene pertama = kalimat pembuka, terakhir = penutup
+// dan ajakan, scene tengah = kalimat isi terbaik (terpanjang yang masih muat 10 detik).
+// Ajakan yang terdiri dari pertanyaan + kalimat pendek digabung jadi satu kalimat.
+// Hasil null kalau jumlah kalimat terlalu sedikit.
+function oneEach(ws, n) {
+  const N = ws.length;
+  let ci = N - 1,
+    close = ws[N - 1];
+  if (N >= 3 && words(close) <= 5 && /\?$/.test(ws[N - 2].trim())) {
+    close = joinOne(ws[N - 2], ws[N - 1]);
+    ci = N - 2;
+  }
+  if (n == 2) return ci >= 1 ? [ws[0], close] : null;
+  if (ci < 2) return null;
+  // Kalimat yang bergantung pada kalimat sebelumnya (Kedua, Dengan begitu, Jadi, ...) dihindari
+  // supaya scene tengah tetap enak dipahami sendiri.
+  const dep = /^(Kedua|Ketiga|Keempat|Terakhir|Dengan begitu|Akibatnya|Artinya|Makanya|Jadi|Tapi|Namun|Lalu|Setelah itu)\b/,
+    all = ws.map((s, i) => [i, words(s), dep.test(s)]).filter(([i]) => i >= 1 && i < ci),
+    pool = all.some((x) => !x[2]) ? all.filter((x) => !x[2]) : all,
+    fit = pool.filter(([, w]) => w <= 20),
+    pick = fit.length
+      ? fit.reduce((a, b) => (b[1] > a[1] ? b : a))
+      : pool.reduce((a, b) => (b[1] < a[1] ? b : a));
+  return [ws[0], ws[pick[0]], close];
+}
+
+// PEMBAGI MODE TERPISAH: 1 kalimat utuh per scene, urutannya tetap nyambung dari scene 1 ke 3.
+// Kalau kalimatnya terlalu sedikit, pakai pembagi potongan biasa.
+function partSplit(sent, ends, n) {
+  const ws = wholeSentences(sent, ends);
+  if (n == 1) return [ws.join(' ')];
+  return oneEach(ws, n) || part(sent, n, ends);
+}
+
+// Pembagi sesuai mode yang dipilih.
+const divide = (sent, ends, n) => (MODE() === 'split' ? partSplit(sent, ends, n) : part(sent, n, ends));
+
 // Mengisi satu adegan dari naskah terpilih (kalimat, durasi, dan pilihan "Apa yang terlihat").
 function fill(j) {
   const x = S.scenes[j],
@@ -5843,9 +6010,8 @@ function fill(j) {
   const e = en(),
     n = e.length,
     p = e.indexOf(j),
-    t = part(s.sent, n, s.ends)[p] || '';
-  const role = p == 0 ? 'Pembuka' : p == n - 1 ? 'Penutup' : 'Lanjutan';
-  Object.assign(x, { text: t, dur: 10, dirty: false });
+    t = divide(s.sent, s.ends, n)[p] || '';
+  Object.assign(x, { text: t, dur: sug(words(t)), durAuto: true, dirty: false });
   setAv(j);
 }
 
@@ -5869,11 +6035,12 @@ function distribute() {
     return;
   }
   const [u, ends] = units(t),
-    ps = part(u, e.length, ends);
+    ps = divide(u, ends, e.length);
   e.forEach((j, p) => {
     const x = S.scenes[j];
     x.text = ps[p] || '';
     x.dur = sug(words(x.text));
+    x.durAuto = true;
     x.dirty = false;
     setAv(j);
   });
@@ -5903,6 +6070,12 @@ const setAv = (j) => {
 // Dipanggil setelah pilihan diubah: reset bagian yang bergantung, bagi ulang naskah, simpan, lalu
 // gambar ulang halaman.
 function after(k, si) {
+  if (k == 'dur') S.scenes[si].durAuto = false;
+  if (k == 'durAuto') {
+    const x = S.scenes[si];
+    x.durAuto = true;
+    x.dur = sug(words(x.text));
+  }
   if (k == 'avis') {
     const x = S.scenes[si],
       v = x.avis;
@@ -5916,7 +6089,11 @@ function after(k, si) {
   if (k == 'div' || k == 'cat') {
     S.master = '';
     S.env = '';
-    S.scenes.forEach((x) => Object.assign(x, { sel: '', adegan: '', text: '', dirty: false }));
+    S.mode = '';
+    S.modeKey = '';
+    S.scenes.forEach((x) =>
+      Object.assign(x, { sel: '', adegan: '', text: '', dirty: false, env: '', envCustom: '', durAuto: true }),
+    );
   }
   if (k == 'sel') {
     const v = S.scenes[si].sel;
@@ -5964,13 +6141,31 @@ const cnt = (i) => {
   ];
 };
 
+// Keterangan perkiraan durasi di bawah kolom naskah.
+const estTxt = (i) => {
+  const x = S.scenes[i],
+    w = words(x.text);
+  if (!w) return 'Perkiraan durasi: belum ada naskah';
+  return `Perkiraan durasi bicara ±${estSec(x.text)} detik (${w} kata) · durasi ${x.dur} detik dipilih ${x.durAuto ? 'otomatis' : 'manual'}`;
+};
+
 const upd = (i) => {
+  const x = S.scenes[i];
+  if (x.durAuto) x.dur = sug(words(x.text));
   const el = $('#cnt' + i);
   if (el) {
     const [t, ok] = cnt(i);
     el.textContent = t;
     el.className = ok ? 'ok' : 'bad';
   }
+  const es = $('#est' + i);
+  if (es) es.textContent = estTxt(i);
+  document
+    .querySelectorAll(`[data-s="${i}"][data-k=dur]`)
+    .forEach((b) => b.classList.toggle('on', +b.dataset.v == x.dur));
+  document
+    .querySelectorAll(`[data-s="${i}"][data-k=durAuto]`)
+    .forEach((b) => b.classList.toggle('on', !!x.durAuto));
 };
 
 // Memperbarui kolom adegan di layar saat naskah sendiri diketik (tanpa menggambar ulang agar
@@ -5981,9 +6176,6 @@ function syncScenes() {
     if (t && x.on) {
       t.value = x.text;
       upd(i);
-      document
-        .querySelectorAll(`[data-s="${i}"][data-k=dur]`)
-        .forEach((b) => b.classList.toggle('on', +b.dataset.v == x.dur));
     }
   });
   const c = $('#cstat');
@@ -6160,7 +6352,7 @@ const sS = (i) => {
     ) +
     (S.master === ''
       ? '<div class="warn">Pilih naskah dulu di langkah 5 : Naskah.</div>'
-      : (i == 0 ? hookField() : '') + sceneCard(i))
+      : `<span class="mode-tag">Mode: ${MODE_LABEL[MODE()]}</span>` + (i == 0 ? hookField() : '') + sceneCard(i))
   );
 };
 
@@ -6169,6 +6361,18 @@ const s6 = () => sS(0),
   s8 = () => sS(2);
 
 // KARTU ADEGAN: kalimat yang diucapkan, "Apa yang terlihat di layar", dan lama adegan.
+// Nama lokasi bawaan (dari langkah 4) untuk keterangan di pilihan latar per scene.
+const defEnvName = () =>
+  S.env === 'c' ? S.envCustom || 'ditentukan AI' : (envs()[+S.env] || ['ditentukan AI'])[0];
+
+// Latar khusus satu scene (hanya mode terpisah). Hasil: [nama, deskripsi] atau null kalau ikut langkah 4.
+const sceneEnv = (i) => {
+  const x = S.scenes[i];
+  if (MODE() !== 'split' || x.env === '' || x.env == null) return null;
+  if (x.env === 'c') return (x.envCustom || '').trim() ? [x.envCustom.trim(), x.envCustom.trim()] : null;
+  return envs()[+x.env] || null;
+};
+
 function sceneCard(i) {
   const x = S.scenes[i],
     [ct, ok] = cnt(i),
@@ -6176,7 +6380,23 @@ function sceneCard(i) {
     o = S.open[i];
   let b = `<div class="sh"><div class="sn"><span class="nb">${i + 1}</span><div><b>Scene ${i + 1}</b><small>${role}</small></div></div><label class="sw"><input type="checkbox" data-s="${i}" data-k="on" ${x.on ? 'checked' : ''}> Pakai</label></div>`;
   if (x.on) {
-    b += `<label class="lb">Kalimat yang diucap talent</label><textarea rows="4" data-s="${i}" data-k="text" placeholder="Tulis kalimat yang diucapkan...">${esc(x.text)}</textarea><small id="cnt${i}" class="${ok ? 'ok' : 'bad'}">${ct}</small>`;
+    b += `<label class="lb">${MODE() === 'split' ? 'Kalimat utuh scene ini' : 'Kalimat yang diucap talent'}</label><textarea rows="4" data-s="${i}" data-k="text" placeholder="Tulis kalimat yang diucapkan...">${esc(x.text)}</textarea><small id="cnt${i}" class="${ok ? 'ok' : 'bad'}">${ct}</small><small id="est${i}" class="est">${estTxt(i)}</small>`;
+    if (MODE() === 'split')
+      b += fld(
+        'Latar belakang scene ini',
+        'Bawaannya mengikuti lokasi di langkah 4. Ganti kalau scene ini mau di tempat lain.',
+        `<select data-s="${i}" data-k="env"><option value="">Sama seperti langkah 4 (${esc(defEnvName())})</option>${envs()
+          .map(
+            (e, k) =>
+              `<option value="${k}" ${x.env === String(k) ? 'selected' : ''}>${esc(e[0])}</option>`,
+          )
+          .join(
+            '',
+          )}<option value="c" ${x.env === 'c' ? 'selected' : ''}>Tulis sendiri</option></select>` +
+          (x.env === 'c'
+            ? `<textarea rows="2" data-s="${i}" data-k="envCustom" placeholder="Contoh: kafe kecil dengan jendela besar">${esc(x.envCustom)}</textarea>`
+            : ''),
+      );
     {
       b += fld(
         'Gerakan talent di layar',
@@ -6197,8 +6417,8 @@ function sceneCard(i) {
       );
       b += fld(
         'Durasi Scene',
-        'Pilih berapa detik scene ini.',
-        `<div class="chips">${[4, 6, 8, 10].map((d) => chip(d + ' detik', '', x.dur == d, `data-s="${i}" data-k="dur" data-v="${d}"`)).join('')}</div>`,
+        'Dihitung otomatis dari jumlah kata naskah. Pilih salah satu kalau mau mengatur sendiri.',
+        `<div class="chips">${chip('Otomatis', '', x.durAuto, `data-s="${i}" data-k="durAuto" data-v="1"`)}${[4, 6, 8, 10].map((d) => chip(d + ' detik', '', x.dur == d, `data-s="${i}" data-k="dur" data-v="${d}"`)).join('')}</div>`,
       );
     }
   }
@@ -6229,7 +6449,11 @@ function s5() {
       (n < 3
         ? `<div class="warn">Hanya ${n} scene aktif, jadi kalimat tiap scene jadi lebih panjang dari 10 detik. Aktifkan 3 scene supaya pas.</div>`
         : '') +
-      `<div class="tip">Naskah dibagi ke ${n} scene. Kalimatnya bisa kamu cek dan ubah di langkah scene 1 sampai 3.</div><button type="button" class="lnk" data-k="redo" data-v="1">${svg('shuffle', 16)} Bagi ulang naskah secara otomatis</button>`;
+      `<div class="tip">Naskah dibagi ke ${n} scene. Kalimatnya bisa kamu cek dan ubah di langkah scene 1 sampai 3.</div>` +
+      (S.mode
+        ? `<div class="tip">Mode naskah: <b>${MODE_LABEL[MODE()]}</b>${MODE() === 'split' ? '<br>Tiap scene memakai 1 kalimat dari naskah: pembuka, isi, dan penutup. Bisa kamu ubah di langkah scene.' : ''}<br><button type="button" class="lnk" data-nav="mode">${svg('shuffle', 16)} Ganti mode naskah</button></div>`
+        : `<div class="tip">Saat menekan Lanjut, kamu akan diminta memilih mode naskah: menyambung atau terpisah per scene.</div>`) +
+      `<button type="button" class="lnk" data-k="redo" data-v="1">${svg('shuffle', 16)} Bagi ulang naskah secara otomatis</button>`;
   return h;
 }
 
@@ -6256,7 +6480,11 @@ function s9() {
     ],
     ['Lokasi', env, 4],
     ['Naskah', ttl, 5],
-    ['Scene', `${n} scene, sekitar ${T} detik`, 6],
+    ['Mode naskah', MODE_LABEL[MODE()], 5],
+    ...(MODE() === 'split'
+      ? [['Latar per scene', en().map((j) => `Scene ${j + 1}: ${(sceneEnv(j) || [env])[0]}`).join(' | '), 6]]
+      : []),
+    ['Scene', `${n} scene, sekitar ${T} detik (${en().map((j) => S.scenes[j].dur).join(' + ')})`, 6],
   ];
   const row = (k, t, sub, items) =>
     fld(
@@ -6318,6 +6546,39 @@ function sR() {
   );
 }
 
+// POPUP MODE NASKAH. MODAL = null (tertutup) atau { to: nomor langkah tujuan setelah memilih }.
+let MODAL = null;
+
+const modalHtml = () =>
+  `<div class="mb" data-mode="cancel"><div class="md" role="dialog" aria-modal="true" aria-labelledby="mt">` +
+  `<h3 id="mt">Naskahnya mau dibuat seperti apa?</h3><p>Pilih dulu cara naskah dibagi ke scene 1 sampai 3.</p>` +
+  `<div class="opts">${opt('film', '1 naskah menyambung', 'Scene 1 sampai 3 satu alur. Kalimat bisa terpotong di ujung scene dan lanjut ke scene berikutnya, seperti yang sekarang.', MODE() === 'join' && !!S.mode, 'data-mode="join"')}${opt('shuffle', '1 naskah, tiap scene terpisah', 'Tiap scene berisi 1 kalimat utuh yang tetap nyambung (pembuka, isi, penutup). Latar tiap scene bisa dipilih sendiri.', MODE() === 'split', 'data-mode="split"')}</div>` +
+  `<button type="button" class="btn sec cx" data-mode="cancel">Batal</button></div></div>`;
+
+const openMode = (to) => {
+  MODAL = { to };
+  render();
+  const b = $('#modal .opt');
+  if (b) b.focus();
+};
+
+// Menyimpan pilihan mode. Kalau modenya berubah, naskah tiap scene dibagi ulang sesuai mode baru.
+function pickMode(m) {
+  const to = MODAL && MODAL.to,
+    same = m === MODE();
+  MODAL = null;
+  S.mode = m;
+  S.modeKey = modeKey();
+  if (!same && S.master !== '') {
+    if (S.master === 'c') distribute();
+    else applyAll(S.master);
+  }
+  S.out = null;
+  save();
+  if (to) goto(to);
+  else render();
+}
+
 // Bar langkah di atas (judul langkah, progres, nomor).
 function stepper(st) {
   const r = reach(),
@@ -6367,6 +6628,7 @@ function render() {
     `<div class="wz">${[null, s1, s2, s3, s4, s5, s6, s7, s8, s9, sR][st]()}</div>`;
   stepper(st);
   navBar(st);
+  $('#modal').innerHTML = MODAL ? modalHtml() : '';
 }
 
 // Pindah langkah (dengan batas langkah yang sudah boleh dibuka).
@@ -6416,6 +6678,10 @@ function build() {
           ? s0.h
           : (S.master === 'c' && S.customScript.trim().split(/(?<=[.!?])\s+/)[0]) || 'NONE'
         : 'NONE';
+  // Latar tiap scene: mode terpisah boleh beda per scene, selain itu semuanya ikut langkah 4.
+  const split = MODE() === 'split' && n > 1,
+    locOf = (i) => sceneEnv(i) || [loc, bg],
+    lkey = (i) => locOf(i).join('|');
   return [0, 1, 2].map((i) => {
     const x = S.scenes[i];
     if (!x.on) return '';
@@ -6432,8 +6698,8 @@ function build() {
       VIDEO_MODEL: 'Default model in Google Flow',
       ASPECT_RATIO: S.ar,
       VIDEO_RESOLUTION: 'AUTO (follow the resolution selected in the Google Flow settings)',
-      LOCATION: loc,
-      BACKGROUND_DESCRIPTION: bg,
+      LOCATION: locOf(i)[0],
+      BACKGROUND_DESCRIPTION: locOf(i)[1],
       CHARACTER_ACTION:
         x.adegan.trim() ||
         'AUTO (design natural actions, gestures and visuals that match the meaning of the dialogue)',
@@ -6496,6 +6762,17 @@ function build() {
           `${key} = "${q(key in M ? M[key] : /^(LOGO_|CONTACT|ADDITIONAL|FINAL_ON|HOOK_ON)/.test(key) ? 'NONE' : A)}"`,
       );
     if (vo) t = VON + '\n\n' + t;
+    if (split) {
+      const prev = e[p - 1],
+        next = e[p + 1],
+        chPrev = prev !== undefined && lkey(prev) !== lkey(i),
+        chNext = next !== undefined && lkey(next) !== lkey(i);
+      let pre = SPLIT_BASE;
+      if (chPrev)
+        pre += '\n\n' + LOC_CHANGE.replace('{NEW}', locOf(i).join(' - ')).replace('{OLD}', locOf(prev)[0]);
+      if (chNext) pre += '\n\n' + CLEAN_END.replace('{NEXT}', locOf(next)[0]);
+      t = pre + '\n\n' + t;
+    }
     if (n == 1)
       t =
         '# IMPORTANT OVERRIDE: This is a SINGLE-SCENE video (not part of a series). Deliver the full dialogue and its call to action inside this one scene and end with a clean, natural closing frame. Ignore any requirement to prepare a continuation frame for another scene.\n\n' +
@@ -6580,13 +6857,19 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.step) {
-    goto(+t.dataset.step);
+    const n = +t.dataset.step;
+    // Dari langkah Naskah ke langkah sesudahnya: tanyakan mode naskah dulu kalau belum dipilih.
+    if (S.step == 5 && n > 5 && n < 10 && OK[5]() && needAsk()) return openMode(n);
+    goto(n);
     return;
   }
   const a = t.dataset.nav;
   if (a == 'next') {
-    if (OK[S.step]()) goto(S.step + 1);
-  } else if (a == 'back') goto(S.step - 1);
+    if (!OK[S.step]()) return;
+    if (S.step == 5 && needAsk()) openMode(6);
+    else goto(S.step + 1);
+  } else if (a == 'mode') openMode(0);
+  else if (a == 'back') goto(S.step - 1);
   else if (a == 'go') {
     S.out = build();
     S.step = 10;
@@ -6602,6 +6885,24 @@ document.addEventListener('click', (e) => {
       render();
       scrollTo(0, 0);
     }
+  }
+});
+
+// Klik pilihan di popup mode naskah (klik latar gelap atau Batal = tutup tanpa memilih).
+document.addEventListener('click', (e) => {
+  const m = e.target.closest('[data-mode]');
+  if (!m || !MODAL) return;
+  if (m.classList.contains('mb') && e.target !== m) return;
+  const v = m.dataset.mode;
+  if (v == 'cancel') {
+    MODAL = null;
+    render();
+  } else pickMode(v);
+});
+addEventListener('keydown', (e) => {
+  if (e.key == 'Escape' && MODAL) {
+    MODAL = null;
+    render();
   }
 });
 
@@ -6636,6 +6937,15 @@ if (S.mig) {
     });
   save();
 }
+
+// Data tersimpan dari versi sebelum fitur mode naskah: lengkapi kolom baru.
+S.scenes.forEach((x) => {
+  if (x.env == null) x.env = '';
+  if (x.envCustom == null) x.envCustom = '';
+  if (x.durAuto == null) x.durAuto = true;
+});
+if (S.mode == null) S.mode = '';
+if (S.modeKey == null) S.modeKey = '';
 
 if (S.m3) {
   delete S.m3;
